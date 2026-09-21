@@ -1,8 +1,9 @@
 # 10 验证调试器修改与 Flash 读回
 
-本指南供维护调试器代码的开发者使用，前提是已完成 [硬件准备](01-preparation.md)、[固件构建与烧录](02-enable-swd.md) 和 [GDB 连接](03-getting-started.md)。
-离线测试不需要板卡；硬件测试会暂停并控制开发板，运行前退出其他调试客户端。
-仓库保留可复用的测试脚本。日志、内存转储和现场记录保存在 `artifacts/` 下，该目录已被 Git 忽略。
+本篇面向修改调试器代码或探针固件的维护者。使用调试器完成日常开发时，可跳过这些回归测试。
+开始前完成 [硬件准备](01-preparation.md)、[固件构建与烧录](02-enable-swd.md) 和 [GDB 连接](03-getting-started.md)。
+离线测试不需要板卡；运行硬件测试前退出其他调试客户端，让脚本独占探针。
+日志、内存转储和现场记录保存在已被 Git 忽略的 `artifacts/` 下。
 
 **本篇目录**
 
@@ -10,7 +11,10 @@
 - [10.2 验证寄存器与缓存一致性](#102-验证寄存器与缓存一致性)
 - [10.3 验证 GDB 与复位后断点](#103-验证-gdb-与复位后断点)
 - [10.4 验证内存导出](#104-验证内存导出)
-- [10.5 验证扩展功能](#105-验证扩展功能)
+- [10.5 验证软件断点与现场分析](#105-验证软件断点与现场分析)
+  - [10.5.1 RAM 软件断点与扇区恢复](#1051-ram-软件断点与扇区恢复)
+  - [10.5.2 Flash 软件断点](#1052-flash-软件断点)
+  - [10.5.3 任务、快照与固件下载](#1053-任务快照与固件下载)
 - [10.6 验证数据观察点](#106-验证数据观察点)
 - [10.7 下一步](#107-下一步)
 
@@ -26,11 +30,8 @@ python3 -m py_compile *.py tests/*.py
 python3 -m unittest discover -s tests -v
 ```
 
-预期所有测试显示 `OK`。覆盖 RAM 读取边界、autoexec 错误清理、忙超时、resume 应答、
-RSP 校验/分片/畸形写请求、观察点判定、探针完成计数以及 dump 退出状态。新增测试覆盖 Flash 备份/恢复和写入失败、二进制 Flash 数据包、
-软件断点原指令恢复、CFI 分支及寄存器识别、只读快照和备份损坏。
-数据观察点测试覆盖范围分解、宽访问重叠、WS63 指令、槽位不足、配置/清理失败、复位重装和未知命中保持暂停。
-协议依据见 [实现原理](09-architecture.md#98-协议依据)。
+预期汇总结果为 `OK`。测试覆盖传输边界、错误处理、寄存器与 RAM 恢复、观察点、Flash 事务、
+软件断点、调用栈信息和离线快照。具体用例见 `tests/test_*.py`，协议依据见 [实现原理](09-architecture.md#98-协议依据)。
 
 ## 10.2 验证寄存器与缓存一致性
 
@@ -44,7 +45,7 @@ python3 tests/hardware_smoke.py
 
 预期输出包括 `unaligned cached RAM write/read/restore: PASS`、
 `31 hardware GPRs preserved after memory/CSR/FPR access: PASS`，以及单步后的 `cause=4`。
-该测试要求 blinky 的 SRAM 栈布局，不是任意固件的无副作用健康检查。
+该测试依赖本教程 blinky 固件的 SRAM 栈布局，移植到其他固件前需核对借用的内存范围。
 
 ## 10.3 验证 GDB 与复位后断点
 
@@ -75,6 +76,20 @@ timeout 35 tools/bin/compiler/riscv/cc_riscv32_musl_105/cc_riscv32_musl_fp/bin/r
 
 ## 10.4 验证内存导出
 
+CMSIS-DAP v2 探针升级后，先独占探针验证 USB 包边界与重复读回：
+
+```bash
+cd "$WS63_DEBUG"
+python3 tests/hardware_bulk.py --expect-packet-size 512
+```
+
+该命令要求探针通过 `DAP_Info` 报告 512 字节包长；64 字节固件改用 `--expect-packet-size 64`。
+测试用重复写入相同值的 DP SELECT 操作填满一个 OUT 包，再重复读取 ROM 与应用 Flash 前 64 KiB，
+核对完整 IN 包、末尾短包和流水线响应。它不暂停或复位 CPU，也不擦写 Flash。
+预期输出包含 `full-length bulk OUT command: PASS`、两项 `"repeat_equal": true`，
+以及 `full-length / short / pipelined bulk IN responses: PASS`。
+记录中的耗时仅用于同条件比较，不代表所有调试操作的速度。
+
 使用独占探针读取两份 ROM 和一份 Flash。RAM 读取加 `--halt`，以包含 CPU 缓存中的值。
 
 ```bash
@@ -92,7 +107,11 @@ python3 tests/verify_flash.py "$WS63_SDK" artifacts/manual/flash.bin
 比较脚本针对 v1.0.102 的固定分区表；更改 SDK 分区后必须更新脚本。它校验六份镜像覆盖的字节，
 不能证明未使用区、NV 运行时更新或其他固件布局与此基线一致。
 
-## 10.5 验证扩展功能
+## 10.5 验证软件断点与现场分析
+
+以下检查分别覆盖指令恢复、任务解析和故障现场。根据修改范围选择对应测试。
+
+### 10.5.1 RAM 软件断点与扇区恢复
 
 停止其他服务端后，验证 RAM 软件断点和现场恢复：
 
@@ -105,6 +124,39 @@ python3 tests/hardware_extensions.py
 此测试会临时屏蔽中断、改写 SP 下方 16 字节并执行测试指令，成功后还原状态。
 其可选 `--flash-address` 参数会擦写指定扇区，仅供已经核对分区表的空闲测试区使用；
 脚本检查该扇区全为 `0xff`，但全空不代表没有被固件预留。
+
+### 10.5.2 Flash 软件断点
+
+先按 [内存导出](#104-验证内存导出) 备份完整 Flash，
+并按 [任务检查](07-rtos.md) 准备匹配的 `artifacts/manual/ws63-debug.elf`。
+在终端 1 启动允许 Flash 软件断点的服务端：
+
+```bash
+cd "$WS63_DEBUG"
+python3 gdbserver.py --software-flash-breakpoints
+```
+
+终端 2 设置相同的路径变量，然后运行：
+
+```bash
+cd "$WS63_DEBUG"
+"$WS63_SDK/tools/bin/compiler/riscv/cc_riscv32_musl_105/cc_riscv32_musl_fp/bin/riscv32-linux-musl-gdb" \
+    -q -nx -batch artifacts/manual/ws63-debug.elf \
+    -ex 'set remotetimeout 600' \
+    -ex "set substitute-path /workspace $WS63_SDK" \
+    -ex 'target extended-remote localhost:3333' \
+    -x tests/gdb_flash_breakpoints.gdb
+```
+
+脚本临时覆盖 GDB 的 Flash 内存属性，在 blinky 代码中插入真实软件断点，检查 EBREAK 命中、
+GDB 单步、再次命中和服务端跨断点硬件单步，最后删除断点并恢复客户端设置。
+SDK GDB 的单步可能使用临时软件断点，不能一律要求 `dcsr.cause=4`；脚本分别验证两种路径。
+预期输出包括 `Flash software breakpoint reinsertion: PASS`、
+`Flash displaced hardware single-step: PASS`，硬件触发器占用为 0，GDB 返回 0。
+测试会擦写应用代码扇区；停止服务端后重新导出 Flash，与备份比较，确认原指令恢复。
+失败时保留 `artifacts/flash/` 恢复日志，按 [恢复写入](06-flash.md#64-恢复中断或失败的写入) 处理。
+
+### 10.5.3 任务、快照与固件下载
 
 按 [任务检查](07-rtos.md) 生成调试 ELF 并执行 `info threads`、`thread apply all bt 8`、
 `monitor tasks water` 和 `monitor sync`。非当前任务的未保存寄存器应显示不可用，写寄存器应被拒绝。
@@ -171,4 +223,4 @@ timeout 60 tools/bin/compiler/riscv/cc_riscv32_musl_105/cc_riscv32_musl_fp/bin/r
 
 ---
 
-上一篇：[09 WS63 的 SWD 调试实现](09-architecture.md) · [返回总目录](../README.md#教程目录) · 下一篇：[11 扩展状态与边界](11-debugger-roadmap.md)
+上一篇：[09 WS63 的 SWD 调试实现](09-architecture.md) · [返回总目录](../README.md#教程目录) · 下一篇：[11 条件断点与目标函数调用](11-gdb-recipes.md)

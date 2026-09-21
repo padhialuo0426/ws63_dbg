@@ -1,6 +1,6 @@
 # 05 观察变量与内存范围
 
-本指南用于查找“谁读写了这个变量”。前提是已完成 [GDB 连接](03-getting-started.md)，
+使用数据观察点定位变量或内存范围的读写位置。开始前完成 [GDB 连接](03-getting-started.md)，
 运行本教程的 blinky 固件，并加载匹配的 ELF。命令适用于 SDK 自带的 GDB；变量名来自该 SDK。
 
 **本篇目录**
@@ -45,8 +45,8 @@ continue
 ```
 
 预期两次显示 `Hardware watchpoint` 及递增的 `Old value`、`New value`。
-GDB 的 `watch` 在值变化时向用户报告；要观察读和写两种访问，可改用 `awatch`。
-计数器更新频繁，会频繁暂停系统，结束后执行 `delete breakpoints`。
+`watch` 在值变化时报告命中；需要观察读和写两种访问时，使用 `awatch`。
+计数器更新频繁，观察它会多次暂停系统，结束后执行 `delete breakpoints`。
 
 ## 5.3 观察非对齐范围
 
@@ -79,10 +79,10 @@ monitor watchpoints
 `info breakpoints` 显示 GDB 的定义；另外两条显示当前硬件配置。
 GDB 在暂停处理期间可能临时删除硬件观察点，空配置不代表定义丢失。
 
-硬件覆盖区间可能比请求范围稍大。服务端仅在证明本次标量访问没有重叠时自动单步过滤。
+硬件覆盖区间可能大于请求范围。服务端确认本次访存没有触及请求范围后，会单步执行该指令并继续运行。
 `filtered guard stops` 是这种边界过滤的累计次数。
 若显示 `unknown/non-scalar or unaligned access; target kept halted`，目标保持暂停，
-用 `x/i $pc` 和 `info registers` 检查指令与地址，不应把未知命中当成没有发生访问。
+用 `x/i $pc` 和 `info registers` 检查指令与地址，再决定是否继续运行。
 
 可解码的指令与重叠观察点的报告方式见 [数据观察点行为](04-debugger.md#43-数据观察点行为)，
 复现检查步骤见 [回归验证](10-verify.md#106-验证数据观察点)。

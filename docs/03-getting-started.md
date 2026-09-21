@@ -27,7 +27,7 @@
    python3 ws63dbg.py
    ```
 
-   正常输出包含 `DPIDR 5ba02477`。修改两条路径以匹配你的实际目录。
+   正常输出包含 `DPIDR 5ba02477`。
 
 2. 在同一终端启动 GDB 服务端：
 
@@ -66,13 +66,12 @@
 正常连接输出示例：
 
 ```text
-probe    CMSIS-DAP v1 (ARM DAPLink CMSIS-DAP)
+probe    CMSIS-DAP v2 (DAPLink-HS CMSIS-DAP)
 DPIDR    5ba02477
 dmstatus 00000c82
 ```
 
-`dmstatus` 的 bit9 是 `allhalted`；复位后的 bit18/19 可能置位，因此整字不一定与示例相同。
-DPIDR 标识调试端口，不能代替板卡型号确认。
+探针名称和 `dmstatus` 随设备及 CPU 状态变化；WS63 的 DPIDR 应为 `5ba02477`。
 
 `ws63.gdbinit` 启用自动硬件断点，连接 `:3333`，并定义刷新寄存器缓存的 `reset` 命令。
 如果 ELF 中记录的编译时源码路径与本地 SDK 路径不同，按实际路径调整脚本中的 `set substitute-path`。
@@ -80,8 +79,9 @@ DPIDR 标识调试端口，不能代替板卡型号确认。
 烧录的固件必须与打开的 ELF 来自同一次构建。
 如修改服务端 `--port`，也要修改 GDB 的 `target remote` 端口；直接使用此初始化脚本仍会连 3333。
 
-GDB 断开后服务端恢复软件断点原指令、清除触发器并恢复 CPU；写过 Flash 或烧写失败时保持暂停。
-若 SWD 已失联，日志会提示清理失败，需要重新连接并按 [Flash 恢复步骤](06-flash.md) 核对目标状态。
+正常断开 GDB 后，服务端恢复软件断点的原指令、清除触发器并恢复 CPU 运行。
+固件下载后尚未复位，或 Flash 操作失败时，目标保持暂停。若日志提示清理失败，
+先重新连接并核对断点、Flash 和寄存器状态；涉及 Flash 恢复时，按 [恢复步骤](06-flash.md#64-恢复中断或失败的写入) 处理。
 
 ### 3.2.1 调试 blinky 与复位
 
@@ -102,6 +102,7 @@ Value returned is $1 = 0
 (gdb) continue
 Hardware read watchpoint 2: g_gpio_inited
 Value = true
+(gdb) delete breakpoints
 (gdb) reset
 reset done, halted at pc=0x00100000
 (gdb) x/2i $pc
@@ -145,8 +146,8 @@ ROM/Flash 经 AHB-AP 读取；RAM 加 `--halt` 后经 CPU 读取，避免写回�
 | 无法插入硬件断点/观察点 | 检查 8 个槽位是否已占满；一个数据范围可能占多个槽位，还需为 GDB 临时断点留空，见 [范围观察点](05-watchpoints.md) |
 | `PC not saved` | 按 [LiteOS 任务检查](07-rtos.md) 生成带补充 CFI 的 ELF，确认服务端和 GDB 使用同一副本 |
 | 变量显示 `<optimized out>` | 当前固件编译优化导致调试信息无法描述变量位置 |
-| `finish` 停错或 RAM 值过旧 | 使用本目录工具，并在 CPU 暂停时访问 RAM；检查 ELF 与板上镜像是否一致 |
-| `target cleanup failed` | SWD 失联导致无法确认清理结果；复位并重新检查目标运行状态 |
+| `finish` 停在意外位置或 RAM 值过旧 | 暂停 CPU 后读取 RAM，并检查 ELF 是否与板上镜像一致；回溯问题见 [任务检查](07-rtos.md) |
+| `target cleanup failed` | 断点或寄存器恢复未完成；重新连接并核对现场。若改写过 Flash，先按 [恢复步骤](06-flash.md#64-恢复中断或失败的写入) 确认原指令已恢复，再复位 |
 
 ## 3.5 下一步
 

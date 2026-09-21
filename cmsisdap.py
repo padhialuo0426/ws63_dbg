@@ -260,6 +260,8 @@ class BulkTransport:
             lib.libusb_close(self.handle)
             raise DebugError("cannot claim CMSIS-DAP interface (in use by another program?)")
         self.report_size = None  # bulk packets are not padded
+        # Bootstrap DAP_Info with one USB packet, then use its negotiated limit.
+        self.packet_size = info["mps"]
         while True:  # drop stale responses
             try:
                 self._read(0.05)
@@ -267,9 +269,12 @@ class BulkTransport:
                 break
 
     def _read(self, timeout):
-        buf = ctypes.create_string_buffer(1024)
+        # A full USB packet is not a message terminator. Requesting more than
+        # one DAP response can merge queued replies, or wait for another reply
+        # until timeout (e.g. a 512-byte response in a 1024-byte USB read).
+        buf = ctypes.create_string_buffer(self.packet_size)
         got = ctypes.c_int()
-        r = self.lib.libusb_bulk_transfer(self.handle, self.info["ep_in"], buf, 1024, ctypes.byref(got),
+        r = self.lib.libusb_bulk_transfer(self.handle, self.info["ep_in"], buf, self.packet_size, ctypes.byref(got),
                                           int(timeout * 1000))
         if r != 0:
             raise DebugError("CMSIS-DAP bulk read failed (%d)" % r)
@@ -319,6 +324,8 @@ class CMSISDAP(DAP):
             self.packet_size = struct.unpack("<H", self.info(INFO_PACKET_SIZE)[:2])[0]
             if self.t.report_size is not None:
                 self.t.report_size = self.packet_size
+            else:
+                self.t.packet_size = self.packet_size
             # How many command packets the probe can buffer; keep that many in flight.
             self.packet_count = max(1, self.info(INFO_PACKET_COUNT)[0])
             caps = self.info(INFO_CAPABILITIES)[0]

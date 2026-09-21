@@ -1,10 +1,9 @@
 # 06 通过 SWD 烧写 Flash
 
-本指南适用于已按 [开启调试接口](02-enable-swd.md) 烧录固件、且 SWD 已可连接的开发板。
-烧录器支持本板的 **GD25Q32、4 MiB、4096 字节扇区**。工具暂停 CPU，经 AHB-AP 控制 SFC，
-不调用旧固件中的固定函数地址，也不向目标下载 RAM 烧录程序。
+本篇介绍通过 SWD 写入、校验和恢复 Flash，适用于已按 [开启调试接口](02-enable-swd.md) 烧录固件、
+且 SWD 可连接的开发板。工具支持本板的 **GD25Q32、4 MiB Flash、4096 字节扇区**。
 
-首次开启 SWD 仍使用串口烧录。SFC 必须已初始化并将 CS1 映射到 `0x200000`；
+首次开启 SWD 仍使用串口烧录。串行 Flash 控制器（SFC）必须已初始化，并将 CS1 映射到 `0x200000`；
 工具不支持空片初始化，也不自动支持其他 Flash 型号。
 本文的 `python3 ws63flash.py` 是本仓库的 SWD 工具，外部 `ws63flash` 命令是串口烧录器。
 
@@ -14,8 +13,11 @@
 - [6.2 写入单个镜像或数据](#62-写入单个镜像或数据)
 - [6.3 使用 GDB load](#63-使用-gdb-load)
 - [6.4 恢复中断或失败的写入](#64-恢复中断或失败的写入)
+- [6.5 可选：使用 Flash 软件断点](#65-可选使用-flash-软件断点)
 
 ## 6.1 烧写 SDK 签名包
+
+先检查 Flash 型号，再写入完整签名包并复位：
 
 1. 退出 GDB 服务端，让烧录工具独占探针；在工程根目录检查 Flash：
 
@@ -39,8 +41,9 @@
    签名与启动头按原样保留；工具不重新签名，也不代替 BootROM 校验签名。
    默认跳过内容相同的扇区，`package` 或 `write` 后追加 `--force` 可强制重写相同内容。
 
-3. 确认输出包含 `verified` 和恢复日志路径，然后按开发板 RST 键重新启动。
+3. 确认写入成功后，按开发板 RST 键重新启动。
 
+   实际改写扇区时，输出包含 `verified` 和恢复日志路径；返回结果中的 `sectors` 为 `0` 表示所有内容均相同，未执行擦写。
    写入后 CPU 保持暂停，不能从烧录前的 PC 直接继续运行新固件。
    完整签名包必须仍包含开启 SWD 的 flashboot，否则复位后调试口可能关闭。
 
@@ -56,8 +59,8 @@ python3 ws63flash.py verify 0x230000 \
     "$WS63_SDK/output/ws63/acore/ws63-liteos-app/ws63-liteos-app-sign.bin"
 ```
 
-成功校验输出 `verify: PASS`。`write` 会保存同一扇区内未覆盖的字节；不同布局或容量需先核对
-[分区表](04-debugger.md#48-内存地址)。`--resume` 仅供确认不会改变运行代码的数据写入使用，
+成功校验输出 `verify: PASS`。`write` 会保存同一扇区内未覆盖的字节；不同布局或容量需先核对 SDK 的分区配置，
+配置文件位置见 [内存与镜像地址](04-debugger.md#48-内存地址)。`--resume` 仅供确认不会改变运行代码的数据写入使用，
 它恢复原 PC，不能替代固件更新后的复位。
 
 ## 6.3 使用 GDB load
@@ -81,7 +84,7 @@ export WS63_OBJCOPY="$WS63_SDK/tools/bin/compiler/riscv/cc_riscv32_musl_105/cc_r
 python3 gdbserver.py
 ```
 
-在另一个终端按 [路径设置](01-preparation.md#11-设置工程与-sdk-路径) 配置两个变量，
+在另一个终端按 [路径设置](01-preparation.md#12-设置工程与-sdk-路径) 配置两个变量，
 再从本工程根目录启动 SDK 的 GDB，让 `load` 的相对路径指向刚生成的文件：
 
 ```bash
@@ -114,7 +117,7 @@ GDB 的擦除请求会把请求扇区中未下载的部分置为 `0xff`；这与
 默认位于 `artifacts/flash/`。成功操作也保留备份；临时解除的保护位会恢复，QE 位保留。
 这不是掉电原子更新：断电、USB 失联或主机进程被终止时，Flash 可能只有部分扇区写完。
 
-正常捕获到错误时工具保持 CPU 暂停，当前 GDB 会话拒绝继续执行。停止服务端后，把实际日志路径传给恢复命令：
+擦写过程中检测到错误后，工具保持 CPU 暂停，当前 GDB 会话拒绝继续执行。停止服务端后，将对应操作的日志路径传给恢复命令：
 
 ```bash
 cd "$WS63_DEBUG"
@@ -124,9 +127,48 @@ python3 ws63flash.py restore "$WS63_JOURNAL"
 
 恢复命令先校验全部备份，再写回旧扇区并读回校验。若断电后 SWD 无法重新开启，使用串口烧录恢复。
 进程重启不会自动查找未完成事务，也不会自动选择恢复哪个镜像；保留并核对本次日志目录。
-这些备份和日志均不入库。
 
-工具还恢复借用的 SFC 命令寄存器、数据缓冲区和写使能锁存位，避免影响暂停时尚未完成的固件调用。
+## 6.5 可选：使用 Flash 软件断点
+
+普通 Flash 断点默认使用硬件触发器。需要节省触发器槽位时，可以选择 Flash 软件断点。
+此功能通过擦写扇区修改运行镜像；开始前按 [内存导出](03-getting-started.md#33-读回-romflash-和-ram) 备份 Flash，并保留操作产生的恢复日志。
+
+1. 在工程根目录启动服务端：
+
+   ```bash
+   cd "$WS63_DEBUG"
+   python3 gdbserver.py --software-flash-breakpoints
+   ```
+
+2. 在另一个终端，按 [GDB 连接步骤](03-getting-started.md#31-快速开始连接已开启-swd-的板卡) 的第 3 步启动 GDB，加载匹配的 blinky ELF。
+   在 GDB 中执行 `info mem`，确认 Flash 区域为 `0x200000..0x600000`，编号为 3，再覆盖该区域的客户端属性：
+
+   ```gdb
+   info mem
+   delete mem 3
+   mem 0x200000 0x600000 rw
+   set breakpoint auto-hw off
+   break blinky_cmsis.c:29
+   continue
+   ```
+
+   若区域编号不同，替换 `delete mem 3` 中的编号。此设置使 SDK GDB 发送软件断点请求（`Z0`），
+   指令仍由服务端通过 Flash 控制器改写；普通内存写请求不能绕过烧写流程。
+
+3. 结束后，先删除断点，再恢复 GDB 的自动内存映射：
+
+   ```gdb
+   delete breakpoints
+   mem auto
+   set breakpoint auto-hw on
+   detach
+   quit
+   ```
+
+删除断点会恢复原指令。复位或掉电前必须完成恢复；发生错误时按 [恢复步骤](#64-恢复中断或失败的写入) 处理。
+恢复自动内存映射后，再使用 GDB `load`。SDK GDB 的 `stepi` 可能通过临时软件断点实现，因此单步也可能擦写扇区。
+内存属性命令见 [GDB 内存区域属性](https://sourceware.org/gdb/current/onlinedocs/gdb.html/Memory-Region-Attributes.html)，
+复测方法见 [软件断点验证](10-verify.md#105-验证软件断点与现场分析)。
 
 下一步：[检查 LiteOS 任务](07-rtos.md)，或按 [回归与读回验证](10-verify.md) 校验修改后的调试器。
 

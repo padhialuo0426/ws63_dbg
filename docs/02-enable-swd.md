@@ -22,9 +22,8 @@ export WS63_SDK="填入实际的 bearpi-pico_h3863 SDK 路径"
 export WS63_DEBUG="填入实际的 ws63_dbg 路径"
 ```
 
-**固件必须先打开 SWD。** WS63 上电后 GPIO_13/14 是普通 GPIO，调试口是关着的，必须由固件把它们切成
-SWD 功能（复用模式 4）。SDK 自带的代码不会做这件事，所以默认固件是连不上的
-（现象：读 DPIDR 没有应答，报 `no SWD response`）。
+WS63 上电后，GPIO_13/14 默认为普通 GPIO。固件必须将它们设为 SWD 功能（复用模式 4），
+探针才能连接。该 SDK 默认未开启 SWD，直接连接会因 DPIDR 读取无应答而报 `no SWD response`。
 
 ## 2.2 在 flashboot 中添加 SWD 初始化
 
@@ -52,11 +51,9 @@ SWD 功能（复用模式 4）。SDK 自带的代码不会做这件事，所以�
 GPIO_13/14 切换为 SWD。未初始化驱动时，设置复用会返回 `ERRCODE_PIN_NOT_INIT`。
 
 flashboot 是此 SDK 中最早可修改的启动代码，位于 BootROM 和 SSB 之后。
-在这里打开 SWD，可以在应用 `main()` 设置断点；不必修改应用本身。
-本教程直接说明修改位置，仓库不分发 `.patch` 文件。
+在这里开启 SWD 后，可以在应用 `main()` 设置断点，无需修改应用代码。
 
-> 这些调用会让调试口从 flashboot 开始保持开放。开发结束后，可移除这三次调用，
-> 或改用项目自己的编译开关控制；移除后仍需重新构建 flashboot 并烧录。
+关闭 SWD 时，移除这些调用并重新构建、烧录 flashboot；也可用项目的编译选项控制是否启用。
 
 ## 2.3 依次构建 flashboot 与应用
 
@@ -100,7 +97,7 @@ for name in ('flashboot_sign.bin', 'flashboot_backup_sign.bin'):
 PYCODE
 ```
 
-本基线两份镜像均为 50304 字节。镜像大小会随代码变化，不能单独作为 SWD 修改生效的证据。
+两份镜像均输出 `bytes: packaged` 表示已包含在固件包中；烧录后还需通过 [连接检查](03-getting-started.md#31-快速开始连接已开启-swd-的板卡) 确认 SWD 可用。
 
 ## 2.4 烧录并复位
 
@@ -113,9 +110,9 @@ ws63flash -b 115200 --flash /dev/serial/by-id/usb-1a86_USB_Serial-if00-port0 \
 ```
 
 输出 `Done. Reseting device...` 且退出码为 0 后，再运行连接检查。
-如果等待复位超时，重新运行命令并及时按键；避免无限循环重试掩盖其他错误。
+如果等待复位超时，检查串口选择和占用情况，再重新运行命令并按提示复位。
 
-本教程使用 `-b 115200` 烧录；更高波特率需另行验证。
+示例使用 115200 波特率。
 flashboot 无法启动时，可通过 BootROM 串口下载重新烧录，但前提是供电、复位和下载口仍可用。
 
 ## 2.5 备选：仅在应用里开启 SWD
