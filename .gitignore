@@ -1,0 +1,32 @@
+# Publish only debugger sources, tutorial pages, license and reusable checks.
+# Everything else (including local logs, dumps and build products) stays local.
+*
+!*/
+!/.gitignore
+!/README.md
+!/LICENSE
+!/cmsisdap.py
+!/ws63dbg.py
+!/gdbserver.py
+!/ws63dump.py
+!/ws63flash.py
+!/ws63elf.py
+!/ws63rtos.py
+!/ws63diagnose.py
+!/ws63break.py
+!/ws63watch.py
+!/requirements.txt
+!/ws63.gdbinit
+!/docs/*.md
+!/tests/*.py
+!/tests/*.gdb
+
+# Never include generated evidence or Python caches, even under allowed folders.
+artifacts/
+patches/
+*.patch
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.obsidian/

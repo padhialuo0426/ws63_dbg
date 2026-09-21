@@ -1,0 +1,2 @@
+# Optional: required for ELF metadata, LiteOS and offline unwinding.
+pyelftools>=0.31,<1
